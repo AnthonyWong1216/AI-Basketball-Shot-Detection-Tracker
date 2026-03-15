@@ -1,0 +1,23 @@
+gitignore
+# 排除所有 mp4 影片
+*.mp4
+
+# 如果你有其他格式也可以順便排除
+*.avi
+*.mov
+*.mkv
+
+# 排除訓練產出的權重檔 (太大不建議傳)
+*.pt
+*.engine
+
+# 排除 Python 自動生成的快取和虛擬環境
+__pycache__/
+venv/
+.env
+
+client_secret.json
+client_secrets.json
+token.pickle
+*.mp4
+*.pt
