@@ -13,7 +13,10 @@ gitignore
 
 # 排除 Python 自動生成的快取和虛擬環境
 __pycache__/
+runs/
+datasets/
 venv/
+sample_video/
 .env
 
 client_secret.json

@@ -11,6 +11,7 @@ if __name__ == "__main__":
     # 'yolov12s.pt' 是 Small 版 (更準，適合 5070)
     PRE_TRAINED_MODEL = 'yolov12n.pt' 
 
+
     # 1. 載入 YOLOv12 模型
     # 如果本地沒有檔，它會自動從 Ultralytics 伺服器下載
     model = YOLO(PRE_TRAINED_MODEL)

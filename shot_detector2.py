@@ -1,108 +1,120 @@
 import os
+import glob
 import cv2
-import math
-import numpy as np
+import torch
+from multiprocessing import Pool, set_start_method
 from ultralytics import YOLO
-# 假設你的 utils.py 仍存在
-from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, clean_ball_pos, get_device
 
-class ShotDetector:
-    def __init__(self):
-        # 1. 初始化模型與路徑
-        video_path = "VID_20260307_085309_252.mp4"
-        self.model = YOLO("best.pt").to('cuda')
-        self.class_names = ['Basketball', 'Basketball Hoop']
-        
-        # 2. 獲取影片資訊
-        self.cap = cv2.VideoCapture(video_path)
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if self.fps == 0: self.fps = 30 # 保險設定
-        
-        base_name = os.path.splitext(os.path.basename(video_path))[0]
-        self.txt_filename = f"{base_name}_hl.txt"
-        
-        # 3. 初始化變數
-        self.ball_pos = []
-        self.hoop_pos = []
-        self.frame_count = 0
-        self.up = False
-        self.up_frame = 0
-        
-        print(f"🚀 開始處理: {video_path} (FPS: {self.fps})")
-        self.run_batch()
+try:
+    from utils import score, detect_down, detect_up, in_hoop_region, clean_hoop_pos, clean_ball_pos
+except ImportError:
+    print("⚠️ 警告: 找不到 utils.py")
 
-    def format_time(self, seconds):
-        mins = int(seconds // 60)
-        secs = int(seconds % 60)
-        return f"{mins:02d}:{secs:02d}"
+def format_time(seconds):
+    seconds = max(0, seconds)
+    mins = int(seconds // 60)
+    secs = int(seconds % 60)
+    return f"{mins:02d}:{secs:02d}"
 
-    def run_batch(self):
-        # 使用 predict(stream=True) 是 YOLO 對 5070 最快的批次讀取方式
-        results = self.model.predict(
-            source="VID_20260307_085309_252.mp4",
-            stream=True, 
-            device=0,      # 強制 5070
-            conf=0.15,     # 稍微調低門檻增加偵測連貫性
-            verbose=False  # 關閉 Log 輸出以加速
-        )
+def process_single_video(video_path):
+    # 1. 載入模型 (RTX 5070 建議用 YOLOv12s 或 v12m)
+    model = YOLO("best.pt").to('cuda')
+    class_names = ['Basketball', 'Basketball Hoop']
+    
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    cap.release()
+    
+    base_name = os.path.splitext(os.path.basename(video_path))[0]
+    txt_filename = f"{base_name}_youtube_timestamps.txt"
+    
+    ball_pos, hoop_pos = [], []
+    frame_count = 0
+    up = False
+    up_frame = 0
 
+    print(f"🚀 [強化偵測模式] 處理: {video_path}")
+
+    # --- 改動 1：放寬 imgsz 到 960，這是一個 5070 的平衡點 ---
+    # --- 改動 2：將 conf 降到極低的 0.05，我們先看到「框」再說 ---
+    results = model.track(
+        source=video_path,
+        stream=True,
+        device=0,
+        conf=0.05,      # 大放水：只要有 5% 像球就抓出來
+        iou=0.5, 
+        half=True,
+        imgsz=960,      # 1024 如果太慢，960 也是很細緻的
+        persist=True,
+        augment=False,  # 先關掉增強，看看單純放寬門檻有沒有效（省時間）
+        verbose=False,
+        save=True       # 重要：這會存下一個帶框的影片在 runs/detect/track/
+    )
+
+    with open(txt_filename, "w", encoding="utf-8") as f:
+        f.write(f"--- YouTube Timestamps for {video_path} ---\n")
+        
         for r in results:
-            self.frame_count += 1
+            frame_count += 1
+            if not r.boxes:
+                continue
+                
             boxes = r.boxes
-            
-            # 處理每一幀的物體
             for box in boxes:
+                # 取得數據
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                w, h = x2 - x1, y2 - y1
                 conf = float(box.conf[0])
                 cls = int(box.cls[0])
-                current_class = self.class_names[cls]
+                w, h = x2 - x1, y2 - y1
                 center = (int(x1 + w / 2), int(y1 + h / 2))
 
-                # 邏輯判斷 (保持與你原本一致)
-                if current_class == "Basketball" and (conf > 0.3 or (in_hoop_region(center, self.hoop_pos) and conf > 0.15)):
-                    self.ball_pos.append((center, self.frame_count, w, h, conf))
+                # 籃球：對籃框附近的球放寬門檻，對一般的球保持 0.25
+                # --- 改動 3：邏輯放寬 ---
+                if class_names[cls] == "Basketball":
+                    # 只要信心 > 0.1 或是靠近籃框就記錄
+                    if conf > 0.1 or (in_hoop_region(center, hoop_pos) and conf > 0.05):
+                        ball_pos.append((center, frame_count, x2-x1, y2-y1, conf))
                 
-                if current_class == "Basketball Hoop" and conf > 0.5:
-                    self.hoop_pos.append((center, self.frame_count, w, h, conf))
+                if class_names[cls] == "Basketball Hoop" and conf > 0.3:
+                    hoop_pos.append((center, frame_count, x2-x1, y2-y1, conf))
 
-            # 清理座標 (這部分涉及 CPU 計算，GPU 正在後台預取下一幀)
-            self.ball_pos = clean_ball_pos(self.ball_pos, self.frame_count)
-            if len(self.hoop_pos) > 1:
-                self.hoop_pos = clean_hoop_pos(self.hoop_pos)
+            # --- 改動 4：暫時把清理函數註解掉，看看是不是它刪錯了 ---
+            # ball_pos = clean_ball_pos(ball_pos, frame_count) 
+            if len(hoop_pos) > 1:
+                hoop_pos = clean_hoop_pos(hoop_pos)
 
-            # 偵測出手邏輯
-            self.detect_highlights()
-
-            if self.frame_count % 300 == 0:
-                print(f"已完成: {self.format_time(self.frame_count/self.fps)}")
-
-        print(f"✅ 處理完成！結果已存入: {self.txt_filename}")
-        self.cap.release()
-
-    def detect_highlights(self):
-        if len(self.hoop_pos) > 0 and len(self.ball_pos) > 0:
-            if not self.up:
-                # 調用你的 detect_up
-                if detect_up(self.ball_pos, self.hoop_pos):
-                    self.up = True
-                    self.up_frame = self.frame_count
+            # 出手偵測邏輯
+            if len(hoop_pos) > 0 and len(ball_pos) > 0:
+                if not up and detect_up(ball_pos, hoop_pos):
+                    up = True
+                    up_frame = frame_count
+                    detect_sec = frame_count / fps
                     
-                    # 紀錄 Highlight
-                    shot_time = self.frame_count / self.fps
-                    start_val = self.format_time(max(0, shot_time - 3))
-                    end_val = self.format_time(shot_time + 2)
-                    goal_val = self.format_time(shot_time)
+                    # 修正輸出：偵測時間 - 2 秒（YouTube 格式）
+                    youtube_ts = format_time(detect_sec - 2)
+                    f.write(f"{youtube_ts} - Shot Highlight\n")
+                    f.flush()
+                    print(f"📌 [{base_name}] 成功偵測出手: {youtube_ts}")
 
-                    with open(self.txt_filename, "a", encoding="utf-8") as f:
-                        f.write(f"Shot at {goal_val} | Cut: {start_val} to {end_val}\n")
-                    print(f"📌 紀錄出手: {goal_val}")
+                # 冷卻時間 1.5 秒
+                if up and (frame_count - up_frame > fps * 1.5):
+                    up = False
 
-            # 重置邏輯 (防止重覆觸發)
-            if self.up and (self.frame_count - self.up_frame > self.fps * 1.5): # 冷卻 1.5 秒
-                self.up = False
+            if frame_count % 1000 == 0:
+                print(f"🕒 [{base_name}] 進度: {format_time(frame_count/fps)}")
+
+    print(f"✅ [{base_name}] 處理完成！")
 
 if __name__ == "__main__":
-    # 在最上方確保環境變數已設定
+    # Windows 必要設定
+    set_start_method('spawn', force=True)
     os.environ["CUDA_MODULE_LOADING"] = "LAZY"
-    ShotDetector()
+    
+    videos = glob.glob("*.mp4")
+    if not videos:
+        print("❌ 找不到影片")
+    else:
+        # 5070 開 3 個 1024 偵測負載會很高，建議先觀察 GPU 記憶體
+        print(f"🔍 找到 {len(videos)} 段影片，以 3 併發模式處理...")
+        with Pool(processes=3) as pool:
+            pool.map(process_single_video, videos)
