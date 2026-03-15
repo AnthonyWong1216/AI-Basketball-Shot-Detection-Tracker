@@ -1,7 +1,3 @@
-train: ...\train\images
-val: ...\valid\images
-test: ...\test\images
-
 # replace '...' with your local absolute paths
 
 # For a smaller (300 images), lighter dataset (faster training, fewer data):
@@ -9,5 +5,17 @@ test: ...\test\images
 
 # For a larger (1300 images), more comprehensive dataset (more data, slower training):
 #   - Download here: https://universe.roboflow.com/robocon-qchql/hoops-chrie-ivyrc/dataset/3
+
+# 基礎路徑：指向你存放 dataset 的總目錄
+path: C:/Users/kfpsp/mycode/AI-Basketball-Shot-Detection-Tracker/datasets
+
+# 訓練、驗證與測試集的路徑 (相對於上面的 path)
+train: train/images
+val: valid/images
+test: test/images
+
+# 類別數量
 nc: 2
+
+# 類別名稱 (必須與你的 label index 0, 1 對應)
 names: ['Basketball', 'Basketball Hoop']
