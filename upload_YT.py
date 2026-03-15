@@ -7,7 +7,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
 # 權限範圍：允許上傳影片至 YouTube
-SCOPES = ["https://www.googleapis.com"]
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 def get_authenticated_service():
     creds = None
