@@ -17,6 +17,7 @@ runs/
 datasets/
 venv/
 sample_video/
+my_labels_data/
 .env
 
 client_secret.json
